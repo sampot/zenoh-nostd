@@ -43,8 +43,14 @@ pub struct GetResponses<'res, OwnedResponse = (), const CHANNEL: bool = false> {
 }
 
 impl<'res, OwnedResponse, const CHANNEL: bool> GetResponses<'res, OwnedResponse, CHANNEL> {
-    pub fn cancel(self) {
-        todo!()
+    /// 取消本次 get 的收訊句柄:此後 `recv()/try_recv()` 恆回 `None`。
+    ///
+    /// asrun P6/upstream todo 落地(靜態槽邊界):已發出 `Request` 的 rid
+    /// callback 無法在 nostd 模型下即時退訂(需 Interest/undeclare 基礎設施,
+    /// 見 VENDOR.md P4),残余 replies 依 timeout(30s)/ResponseFinal 自然回收
+    /// (`drop_timedout`)。取消句柄讓呼叫端立即脫離,不等逾時窗。
+    pub fn cancel(mut self) {
+        self.receiver = None;
     }
 
     pub fn keyexpr(&self) -> &keyexpr {
@@ -54,16 +60,13 @@ impl<'res, OwnedResponse, const CHANNEL: bool> GetResponses<'res, OwnedResponse,
 
 impl<'res, OwnedResponse> GetResponses<'res, OwnedResponse, true> {
     pub fn try_recv(&self) -> Option<OwnedResponse> {
-        self.receiver.as_ref().unwrap().try_receive().ok()
+        self.receiver.as_ref()?.try_receive().ok()
     }
 
     pub async fn recv(&self) -> Option<OwnedResponse> {
-        match select(
-            Timer::at(self.timedout),
-            self.receiver.as_ref().unwrap().receive(),
-        )
-        .await
-        {
+        // cancel() 後句柄已丟 → 立即 None(不佔 timer/callback)
+        let receiver = self.receiver.as_ref()?;
+        match select(Timer::at(self.timedout), receiver.receive()).await {
             Either::First(_) => None,
             Either::Second(v) => Some(v),
         }
