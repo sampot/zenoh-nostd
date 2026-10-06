@@ -87,8 +87,8 @@ where
                     let tx = tx_guard.deref_mut();
 
                     if tx.transport().should_close(start.elapsed().into()) {
-                        // P5/asrun:租約逾時 → 優雅發送 Close 再收口(原 upstream TODO)
-                        let _ = tx.close().await;
+                        // P5/asrun:租約逾時 → 發 Close{Expired,Session}(對齊 pico lease.c)再收口
+                        let _ = tx.close_expired().await;
                         break Err(EitherError::A(TransportLinkError::TransportClosed));
                     }
 
