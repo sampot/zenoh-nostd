@@ -14,6 +14,7 @@ use crate::{
 
 mod run;
 
+pub mod close; // asrun P5:優雅關閉
 pub mod get;
 pub mod r#pub;
 pub mod put;

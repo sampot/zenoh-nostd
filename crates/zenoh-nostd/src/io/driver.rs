@@ -69,6 +69,13 @@ where
         let start = Instant::now();
 
         loop {
+            // P5/asrun:前輪 flush(FlushIter)解出對端 Close 即翻 flag → 此處優雅收口 Ok(())
+            // (檢查點在 recv 之前,無借用衝突;EOF/逾時維持 TransportClosed Err)
+            if rx.transport().close_received() {
+                zenoh_proto::info!("Transport closed gracefully by peer");
+                return Ok(());
+            }
+
             let (write_lease, read_lease) = self.sync(start, start.elapsed(), &mut rx).await;
             if rx.transport().closed() {
                 return Err(EitherError::A(TransportLinkError::TransportClosed));
@@ -80,7 +87,8 @@ where
                     let tx = tx_guard.deref_mut();
 
                     if tx.transport().should_close(start.elapsed().into()) {
-                        // TODO: send Close msg
+                        // P5/asrun:租約逾時 → 優雅發送 Close 再收口(原 upstream TODO)
+                        let _ = tx.close().await;
                         break Err(EitherError::A(TransportLinkError::TransportClosed));
                     }
 
@@ -92,10 +100,11 @@ where
                     continue;
                 }
                 Either3::Third(res) => {
+                    let mut msgs = res?;
                     let mut state = state.lock().await;
-
-                    for msg in res? {
-                        update(self.zid, &mut state, msg.0, msg.1)
+                    #[allow(clippy::while_let_on_iterator)] // 需顯式 next 以終止借用
+                    while let Some(item) = msgs.next() {
+                        update(self.zid, &mut state, item.0, item.1)
                             .await
                             .map_err(EitherError::B)?;
                     }
@@ -106,7 +115,10 @@ where
             }
 
             if rx.transport().should_close(start.elapsed().into()) {
-                // TODO: Try send Close msg
+                // P5/asrun:rx 租約逾時 → best-effort 回發 Close 後收口(原 upstream TODO)
+                if let Ok(mut tx_guard) = self.tx.try_lock() {
+                    let _ = tx_guard.deref_mut().close().await;
+                }
                 break Err(EitherError::A(TransportLinkError::TransportClosed));
             }
         }
