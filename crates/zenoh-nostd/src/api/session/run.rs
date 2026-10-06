@@ -1,4 +1,4 @@
-use zenoh_proto::{exts::Value, msgs::*, *};
+use zenoh_proto::{exts::Value, fields::Reliability, msgs::*, *};
 
 use crate::{
     api::{
@@ -7,6 +7,7 @@ use crate::{
         session::Session,
     },
     config::ZSessionConfig,
+    io::transport::ZTransportLinkTx,
     session::{GetResponse, Sample},
 };
 
@@ -84,9 +85,48 @@ where
                         );
 
                         let count = state.queryable_callbacks.intersects(ke).count();
-                        state.queryable_callbacks.set_counter(id, count)?;
-                        for cb in state.queryable_callbacks.intersects(ke) {
-                            cb.call(&query).await;
+                        if count == 0 {
+                            // P1/#23 配套:本 session 無 queryable 命中此 Request → 立即 ResponseFinal,
+                            // 不佔 counter slot、不留請求方乾等 timeout(rid 為本 session 範圍,語意正確)。
+                            self.driver
+                                .tx()
+                                .await
+                                .send(core::iter::once(NetworkMessage {
+                                    reliability: Reliability::default(),
+                                    qos: exts::QoS::default(),
+                                    body: NetworkBody::ResponseFinal(ResponseFinal {
+                                        rid: id,
+                                        ..Default::default()
+                                    }),
+                                }))
+                                .await?;
+                        } else {
+                            state.queryable_callbacks.set_counter(id, count)?;
+                            for cb in state.queryable_callbacks.intersects(ke) {
+                                cb.call(&query).await;
+                            }
+                            // P1b:auto-finalize — callback 為 inline 派發(&query 不可 mut,
+                            // upstream 無處觸發 finalize → 請求方只能乾等 timeout)。
+                            // asrun profile 不支持 channel queryable 之「延後回覆」(WIT 同步語意),
+                            // dispatch 全部完成即按命中數強制遞減收斂,歸零發 ResponseFinal。
+                            let mut finalized = false;
+                            for _ in 0..count {
+                                finalized |= state.queryable_callbacks.decrease(id);
+                            }
+                            if finalized {
+                                self.driver
+                                    .tx()
+                                    .await
+                                    .send(core::iter::once(NetworkMessage {
+                                        reliability: Reliability::default(),
+                                        qos: exts::QoS::default(),
+                                        body: NetworkBody::ResponseFinal(ResponseFinal {
+                                            rid: id,
+                                            ..Default::default()
+                                        }),
+                                    }))
+                                    .await?;
+                            }
                         }
                     }
                     _ => {}
