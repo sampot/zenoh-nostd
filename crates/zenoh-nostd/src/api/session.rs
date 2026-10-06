@@ -14,6 +14,7 @@ use crate::{
 
 mod run;
 
+pub mod close; // asrun P5:優雅關閉
 pub mod get;
 // asrun P3: liveliness token/subscriber(線格式對齊 zenoh-pico,MID 6/7)。
 pub mod liveliness;

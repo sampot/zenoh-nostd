@@ -29,6 +29,9 @@ pub struct TransportRx<Buff> {
     state: State,
 
     ignore_invalid_sn: bool,
+
+    // P5/asrun:標記「收到對端 Close 幀」(graceful shutdown);Cell 便於惰性 flush 中記錄
+    close_received: core::cell::Cell<bool>,
 }
 
 impl<Buff> TransportRx<Buff> {
@@ -52,7 +55,13 @@ impl<Buff> TransportRx<Buff> {
 
             state: State::Opened,
             ignore_invalid_sn: false,
+            close_received: core::cell::Cell::new(false),
         }
+    }
+
+    /// P5/asrun:本端是否在 flush 中收到過對端 Close 幀(graceful shutdown)。
+    pub fn close_received(&self) -> bool {
+        self.close_received.get()
     }
 
     pub(crate) fn into_inner(self) -> Buff {
@@ -429,27 +438,80 @@ where
     where
         Buff: AsMut<[u8]> + AsRef<[u8]>,
     {
+        // P5/asrun:欄位級 borrow-split,使 Close 幀可在惰性迭代中翻轉
+        // State::Closed(graceful),而非無聲吞掉。
+        let Self {
+            cursor,
+            batch_size,
+            sn,
+            resolution,
+            ignore_invalid_sn: ignore,
+            state,
+            close_received,
+            ..
+        } = self;
+
+        // buff 走 self 不可變讀取(避免 destructuring 後的 local reborrow lifetime 問題)
         let size = core::cmp::min(
             self.buff.as_ref().len(),
-            core::cmp::min(self.batch_size, self.cursor),
+            core::cmp::min(*batch_size, *cursor),
         );
-        self.clear();
-        let mut reader = &self.buff.as_ref()[..size];
-        let mut last_frame = None;
-        let sn = &mut self.sn;
-        let resolution = self.resolution;
-        let ignore = self.ignore_invalid_sn;
+        *cursor = 0;
 
-        core::iter::from_fn(move || {
-            Self::decode(&mut reader, &mut last_frame, sn, resolution, ignore)
-        })
-        .filter_map(|m| match m.0 {
-            Message::Network(msg) => Some((msg, m.1)),
-            _ => None,
-        })
+        FlushIter::<Buff> {
+            reader: &self.buff.as_ref()[..size],
+            state,
+            close_received,
+            last_frame: None,
+            sn,
+            resolution: *resolution,
+            ignore: *ignore,
+            _pd: core::marker::PhantomData,
+        }
     }
 
     fn clear(&mut self) {
         self.cursor = 0;
+    }
+}
+
+/// P5/asrun:惰性 flush 迭代器——欄位級借用,Close 幀在解出即時翻轉
+/// `State::Closed` + flag(graceful),解決閉包無法同時可變 borrow 的問題。
+struct FlushIter<'a, Buff: AsRef<[u8]>> {
+    reader: &'a [u8],
+    state: &'a mut State,
+    close_received: &'a core::cell::Cell<bool>,
+    last_frame: Option<FrameHeader>,
+    sn: &'a mut u32,
+    resolution: Resolution,
+    ignore: bool,
+    _pd: core::marker::PhantomData<Buff>,
+}
+
+impl<'a, Buff: AsRef<[u8]>> Iterator for FlushIter<'a, Buff> {
+    type Item = (NetworkMessage<'a>, &'a [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.reader.is_empty() {
+                return None;
+            }
+            let m = TransportRx::<Buff>::decode(
+                &mut self.reader,
+                &mut self.last_frame,
+                self.sn,
+                self.resolution,
+                self.ignore,
+            )?;
+            match m.0 {
+                Message::Network(msg) => return Some((msg, m.1)),
+                Message::Transport(TransportMessage::Close(_)) => {
+                    *self.state = State::Closed;
+                    self.close_received.set(true);
+                    continue;
+                }
+                _ => continue,
+            }
+        }
     }
 }
