@@ -38,9 +38,10 @@ where
         }
     }
 
-    #[allow(dead_code)]
-    async fn undeclare(self) -> core::result::Result<(), SessionError> {
-        todo!("send undeclare interest")
+    // P2:Publisher 宣告無遠端狀態(upstream 未發 interest,#10),本地資源由借用生命週期管理;
+    // drop self 即完成 undeclare。interest 落地時此處補發 Undeclare interest。
+    pub async fn undeclare(self) -> core::result::Result<(), SessionError> {
+        Ok(())
     }
 
     pub fn keyexpr(&self) -> &keyexpr {

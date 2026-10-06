@@ -48,8 +48,9 @@ impl<Config, OwnedQuery, const CHANNEL: bool> Queryable<Config, OwnedQuery, CHAN
 where
     Config: ZSessionConfig,
 {
-    #[allow(dead_code)]
-    async fn undeclare(self) -> core::result::Result<(), SessionError> {
+    // P2:Queryable 退订落地 — 回呼表移除(含 counter slot 回收)+ 發送 UndeclareQueryable。
+    // channel 收尾:remove(id) 銷毀回呼條目即 drop 其捕獲的 sender,recv 自然結束(None)。
+    pub async fn undeclare(self) -> core::result::Result<(), SessionError> {
         let msg = Declare {
             body: DeclareBody::UndeclareQueryable(UndeclareQueryable {
                 id: self.id,
@@ -75,7 +76,7 @@ where
             }))
             .await?;
 
-        todo!("Also stop the channel if any")
+        Ok(())
     }
 }
 
