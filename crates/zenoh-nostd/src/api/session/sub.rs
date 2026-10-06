@@ -42,8 +42,9 @@ impl<'a, 'res, Config, OwnedSample, const CHANNEL: bool>
 where
     Config: ZSessionConfig,
 {
-    #[allow(dead_code)]
-    async fn undeclare(self) -> core::result::Result<(), SessionError> {
+    // P2:退订落地 — 回呼表移除 + 發送 UndeclareSubscriber。
+    // channel 收尾:remove(id) 銷毀回呼條目即_drop_其捕獲的 sender,recv 自然結束(None)。
+    pub async fn undeclare(self) -> core::result::Result<(), SessionError> {
         let msg = Declare {
             body: DeclareBody::UndeclareSubscriber(UndeclareSubscriber {
                 id: self.id,
@@ -65,7 +66,7 @@ where
             }))
             .await?;
 
-        todo!("Also stop the channel if any")
+        Ok(())
     }
 
     pub fn keyexpr(&self) -> &keyexpr {
