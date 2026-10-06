@@ -15,6 +15,8 @@ use crate::{
 mod run;
 
 pub mod get;
+// asrun P3: liveliness token/subscriber(線格式對齊 zenoh-pico,MID 6/7)。
+pub mod liveliness;
 pub mod r#pub;
 pub mod put;
 pub mod querier;
@@ -29,6 +31,8 @@ where
     sub_callbacks: Config::SubCallbacks<'res>,
     get_callbacks: Config::GetCallbacks<'res>,
     queryable_callbacks: Config::QueryableCallbacks<'res>,
+    // asrun P3:liveliness 事件獨立表,不與 data sub 混流
+    liveliness_callbacks: Config::LivelinessCallbacks<'res>,
 }
 
 impl<'res, Config> SessionState<'res, Config>
@@ -41,6 +45,7 @@ where
             sub_callbacks: Config::SubCallbacks::empty(),
             get_callbacks: Config::GetCallbacks::empty(),
             queryable_callbacks: Config::QueryableCallbacks::empty(),
+            liveliness_callbacks: Config::LivelinessCallbacks::empty(),
         }
     }
 

@@ -16,11 +16,14 @@ pub mod session {
     pub use zenoh_proto::{Endpoint, Error};
 
     pub use super::api::{
+        liveliness::*,
         query::*,
         response::*,
         sample::*,
         session::Session,
-        session::{get::*, r#pub::*, put::*, querier::*, queryable::*, sub::*},
+        session::{
+            get::*, liveliness::*, r#pub::*, put::*, querier::*, queryable::*, sub::*,
+        },
     };
 
     pub mod zenoh {

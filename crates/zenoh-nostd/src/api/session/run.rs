@@ -3,6 +3,7 @@ use zenoh_proto::{exts::Value, msgs::*, *};
 use crate::{
     api::{
         callbacks::{ZCallbacks, ZDynCallback},
+        liveliness::LivelinessEvent,
         query::QueryableQuery,
         session::Session,
     },
@@ -89,6 +90,28 @@ where
                             cb.call(&query).await;
                         }
                     }
+                    // asrun P3 liveliness:token 宣告/撤回 → 合成 online/offline 事件交付
+                    // liveliness subscribers。UndeclareToken 缺 wire_expr(非本實作發出)則跳過。
+                    NetworkBody::Declare(Declare { body, .. }) => match body {
+                        DeclareBody::DeclareToken(DeclareToken { wire_expr, .. }) => {
+                            let ke = keyexpr::new(wire_expr.suffix)?;
+                            let event = LivelinessEvent::new(ke, true);
+                            for cb in state.liveliness_callbacks.intersects(ke) {
+                                cb.call(&event).await;
+                            }
+                        }
+                        DeclareBody::UndeclareToken(UndeclareToken {
+                            wire_expr: Some(wire_expr),
+                            ..
+                        }) => {
+                            let ke = keyexpr::new(wire_expr.suffix)?;
+                            let event = LivelinessEvent::new(ke, false);
+                            for cb in state.liveliness_callbacks.intersects(ke) {
+                                cb.call(&event).await;
+                            }
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
 

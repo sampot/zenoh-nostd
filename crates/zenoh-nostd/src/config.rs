@@ -1,6 +1,6 @@
 use crate::{
     api::{
-        arg::{GetResponseRef, QueryableQueryRef, SampleRef},
+        arg::{GetResponseRef, LivelinessArg, QueryableQueryRef, SampleRef},
         callbacks::ZCallbacks,
     },
     io::{link::ZLinkManager, transport::TransportLinkManager},
@@ -15,6 +15,8 @@ pub trait ZSessionConfig: Sized {
     type QueryableCallbacks<'res>: ZCallbacks<'res, QueryableQueryRef<'res, Self>>
     where
         Self: 'res;
+    // asrun P3: liveliness token 事件表(LivelinessEvent 引用交付)
+    type LivelinessCallbacks<'res>: ZCallbacks<'res, LivelinessArg>;
 
     fn transports(&self) -> &TransportLinkManager<Self::LinkManager>;
     fn buff(&self) -> Self::Buff;
