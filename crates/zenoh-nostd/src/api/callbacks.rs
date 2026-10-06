@@ -164,13 +164,16 @@ impl<'a, Arg: ZArg + 'a, const CAPACITY: usize, Callback: Storage, Future: Stora
     }
 
     fn decrease(&mut self, id: u32) -> bool {
-        if let Some(value) = self.counters.get_mut(&id) {
-            if *value > 0 {
-                *value -= 1;
-            }
-
-            *value == 0
+        // P1/#23 counter 洩漏修復:減到零立即移除條目,回收 FnvIndexMap slot;
+        // 否則每回答一則 Query 永久佔一格,CAPACITY 次後 set_counter 即 CollectionIsFull。
+        let Some(value) = self.counters.get(&id).copied() else {
+            return false;
+        };
+        if value <= 1 {
+            self.counters.remove(&id);
+            true
         } else {
+            let _ = self.counters.insert(id, value - 1);
             false
         }
     }
@@ -292,13 +295,15 @@ impl<'a, Arg: ZArg + 'a, Callback: Storage, Future: Storage> ZCallbacks<'a, Arg>
     }
 
     fn decrease(&mut self, id: u32) -> bool {
-        if let Some(value) = self.counters.get_mut(&id) {
-            if *value > 0 {
-                *value -= 1;
-            }
-
-            *value == 0
+        // P1/#23 counter 洩漏修復:減到零立即移除條目(與 Fixed 變體同步)。
+        let Some(value) = self.counters.get(&id).copied() else {
+            return false;
+        };
+        if value <= 1 {
+            self.counters.remove(&id);
+            true
         } else {
+            self.counters.insert(id, value - 1);
             false
         }
     }
@@ -365,5 +370,55 @@ where
 
     fn call(&mut self, arg: <Self::Arg as ZArg>::Of<'_>) -> impl Future<Output = ()> {
         (self.0)(arg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! P1/#23 最小重現:queryable finalize counter slot 必須在歸零時回收,
+    //! 長活 session 回答超過 CAPACITY 則 Query 不得死於 `CollectionIsFull`。
+
+    use super::*;
+    use crate::api::arg::SampleRef;
+    use dyn_utils::storage::RawOrBox;
+
+    type Cbs = FixedCapacityCallbacks<'static, SampleRef, 8, RawOrBox<16>, RawOrBox<24>>;
+
+    #[test]
+    fn fixed_counter_slots_recycle_across_capacity() {
+        let mut cbs = Cbs::empty();
+        // 10 輪 > CAPACITY=8:修復前第 9 輪 set_counter 必 CollectionIsFull
+        for rid in 0..10u32 {
+            cbs.set_counter(rid, 1)
+                .expect("counter slot must recycle after finalize");
+            assert!(cbs.decrease(rid), "decrement to zero reports done");
+            // 條目已移除:再 decrease 不得重複報 done(原 bug 會永久報 true)
+            assert!(!cbs.decrease(rid), "removed entry must not report done again");
+        }
+    }
+
+    #[test]
+    fn fixed_decrease_counts_down_then_removes() {
+        let mut cbs = Cbs::empty();
+        cbs.set_counter(7, 3).unwrap();
+        assert!(!cbs.decrease(7));
+        assert!(!cbs.decrease(7));
+        assert!(cbs.decrease(7), "third decrease reaches zero");
+        assert!(!cbs.decrease(7), "entry removed at zero");
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn alloc_counter_slots_recycle_across_capacity() {
+        let mut cbs = AllocCallbacks::<
+            'static,
+            SampleRef,
+            dyn_utils::storage::Box,
+            dyn_utils::storage::Box,
+        >::empty();
+        for rid in 0..64u32 {
+            cbs.set_counter(rid, 1).unwrap();
+            assert!(cbs.decrease(rid));
+        }
     }
 }
