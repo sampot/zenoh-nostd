@@ -34,6 +34,8 @@ where
     queryable_callbacks: Config::QueryableCallbacks<'res>,
     // asrun P3:liveliness 事件獨立表,不與 data sub 混流
     liveliness_callbacks: Config::LivelinessCallbacks<'res>,
+    // asrun P4:入站 resource 映射(router 轉發 declaration 的 rid→ke)
+    scopes: crate::api::scopes::ScopeMap<8>,
 }
 
 impl<'res, Config> SessionState<'res, Config>
@@ -47,6 +49,7 @@ where
             get_callbacks: Config::GetCallbacks::empty(),
             queryable_callbacks: Config::QueryableCallbacks::empty(),
             liveliness_callbacks: Config::LivelinessCallbacks::empty(),
+            scopes: crate::api::scopes::ScopeMap::new(),
         }
     }
 

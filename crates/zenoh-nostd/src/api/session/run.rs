@@ -5,6 +5,7 @@ use crate::{
         callbacks::{ZCallbacks, ZDynCallback},
         liveliness::LivelinessEvent,
         query::QueryableQuery,
+        scopes::MAX_KE,
         session::Session,
     },
     config::ZSessionConfig,
@@ -131,24 +132,59 @@ where
                         }
                     }
                     // asrun P3 liveliness:token 宣告/撤回 → 合成 online/offline 事件交付
-                    // liveliness subscribers。UndeclareToken 缺 wire_expr(非本實作發出)則跳過。
+                    // liveliness subscribers。
+                    // asrun P4:對齊 zenoh(rust) router 轉發形態——先 `DeclareKeyExpr{id,ke}`
+                    // 註冊資源、再 `DeclareToken{id,scope:id,suffix:""}` 引用(同 id);
+                    // 直接 keyexpr::new("") 會炸 EmptyChunk → 須經 scopes 表解析。
                     NetworkBody::Declare(Declare { body, .. }) => match body {
-                        DeclareBody::DeclareToken(DeclareToken { wire_expr, .. }) => {
-                            let ke = keyexpr::new(wire_expr.suffix)?;
-                            let event = LivelinessEvent::new(ke, true);
-                            for cb in state.liveliness_callbacks.intersects(ke) {
-                                cb.call(&event).await;
+                        DeclareBody::DeclareKeyExpr(DeclareKeyExpr { id, wire_expr }) => {
+                            if !wire_expr.suffix.is_empty() {
+                                state.scopes.insert(id as u32, wire_expr.suffix);
                             }
                         }
-                        DeclareBody::UndeclareToken(UndeclareToken {
-                            wire_expr: Some(wire_expr),
-                            ..
-                        }) => {
-                            let ke = keyexpr::new(wire_expr.suffix)?;
-                            let event = LivelinessEvent::new(ke, false);
-                            for cb in state.liveliness_callbacks.intersects(ke) {
-                                cb.call(&event).await;
+                        DeclareBody::DeclareToken(DeclareToken { id, wire_expr }) => {
+                            // inline token:先記 id 供後續 UndeclareToken 引用
+                            // (置於 resolve 前:避免持 state.scopes 共享借用再变更)
+                            if wire_expr.scope == 0 && !wire_expr.suffix.is_empty() {
+                                state.scopes.insert(id, wire_expr.suffix);
                             }
+                            let mut join = heapless::String::<MAX_KE>::new();
+                            if let Some(ke_str) = state
+                                .scopes
+                                .resolve(wire_expr.scope as u32, wire_expr.suffix, &mut join)
+                            {
+                                if let Ok(ke) = keyexpr::new(ke_str) {
+                                    let event = LivelinessEvent::new(ke, true);
+                                    for cb in state.liveliness_callbacks.intersects(ke) {
+                                        cb.call(&event).await;
+                                    }
+                                }
+                            }
+                        }
+                        DeclareBody::UndeclareToken(UndeclareToken { id, wire_expr }) => {
+                            let mut join = heapless::String::<MAX_KE>::new();
+                            {
+                                // router 轉發形態(zenohd 1.10.1 trace 實錘):
+                                // `UndeclareToken{id, ext_wire_expr={scope:0,suffix:""}}`
+                                // —— ext 在但內容空,ke 須由 id 經 scopes 表還原
+                                // (id 於 DeclareKeyExpr/inline token 註冊時已入表)。
+                                let ke_str: Option<&str> = wire_expr
+                                    .as_ref()
+                                    .and_then(|we| {
+                                        state.scopes.resolve(we.scope as u32, we.suffix, &mut join)
+                                    })
+                                    .filter(|s| !s.is_empty())
+                                    .or_else(|| state.scopes.get(id));
+                                if let Some(ke_str) = ke_str {
+                                    if let Ok(ke) = keyexpr::new(ke_str) {
+                                        let event = LivelinessEvent::new(ke, false);
+                                        for cb in state.liveliness_callbacks.intersects(ke) {
+                                            cb.call(&event).await;
+                                        }
+                                    }
+                                }
+                            }
+                            state.scopes.remove(id);
                         }
                         _ => {}
                     },

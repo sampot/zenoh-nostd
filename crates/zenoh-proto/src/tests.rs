@@ -5,3 +5,4 @@ mod ke;
 mod msgs;
 mod random;
 mod r#struct;
+mod golden_rust;
